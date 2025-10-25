@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.dylib
+*.egg-info/
+.eggs/
+.build/
+.dist/
+
+# Virtual env
+.env/
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project outputs
+**/output/
+**/site/.cache/
+**/site/node_modules/
+
+# Audio cache
+**/*.tmp
+**/*.wav.tmp
+
+# Netlify
+.netlify/
+
+# Local backups
+backup/
