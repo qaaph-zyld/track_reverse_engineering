@@ -11,6 +11,8 @@ from typing import Optional, Dict, Any
 
 import numpy as np
 import matplotlib
+import librosa
+import os.path as _osp
 
 # Use non-interactive backend for CLI
 matplotlib.use('Agg')
@@ -79,6 +81,8 @@ class AudioAnalyzerCLI:
                                   help='Enable result caching to speed up repeated analyses')
         analyze_parser.add_argument('--cache-dir', type=str, default='.cache',
                                   help='Directory to store cache files (default: ./.cache)')
+        analyze_parser.add_argument('--config', type=str, default=None,
+                                  help='YAML config file to override options (backends, cache, etc.)')
         
         # Batch process command
         batch_parser = subparsers.add_parser('batch', help='Process multiple audio files')
@@ -109,6 +113,17 @@ class AudioAnalyzerCLI:
         args = self.parser.parse_args(args)
         
         if args.command == 'analyze':
+            # Load config if provided and override CLI args
+            if getattr(args, 'config', None):
+                try:
+                    import yaml
+                    with open(args.config, 'r') as f:
+                        cfg = yaml.safe_load(f) or {}
+                    for k, v in cfg.get('analyze', {}).items():
+                        if hasattr(args, k):
+                            setattr(args, k, v)
+                except Exception as _e:
+                    print(f"Warning: failed to load config {args.config}: {_e}")
             return self.analyze_audio(
                 args.input_file,
                 output_dir=args.output_dir,
