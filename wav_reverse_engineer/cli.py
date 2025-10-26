@@ -19,12 +19,13 @@ matplotlib.use('Agg')
 sys.path.insert(0, str(Path(__file__).parent.absolute()))
 
 from audio_analyzer.audio_processor import AudioProcessor
-from audio_analyzer.feature_extractor import FeatureExtractor
+from audio_analyzer.feature_extractor import FeatureExtractor, DetectedChord, NoteName
 from audio_analyzer.visualizer import AudioVisualizer
 from audio_analyzer.utils import save_analysis_results, ensure_dir
 from audio_analyzer.effects_analyzer import analyze_effects
 from audio_analyzer.source_separation import separate_hpss, separate_spleeter, export_stems
 from audio_analyzer.instrument_recognizer import InstrumentRecognizer
+from audio_analyzer.backends.chordino import detect_chords_chordino
 
 class AudioAnalyzerCLI:
     """Command-line interface for audio analysis."""
@@ -63,6 +64,9 @@ class AudioAnalyzerCLI:
                                   help='Perform source separation method')
         analyze_parser.add_argument('--export-stems', action='store_true',
                                   help='Export separated stems as audio files')
+        analyze_parser.add_argument('--chord-backend', type=str, default='simple',
+                                  choices=['simple', 'chordino'],
+                                  help='Chord detection backend (default: simple)')
         
         # Batch process command
         batch_parser = subparsers.add_parser('batch', help='Process multiple audio files')
@@ -103,7 +107,8 @@ class AudioAnalyzerCLI:
                 effects=args.effects,
                 instruments=args.instruments,
                 separate=args.separate,
-                export_stem_files=args.export_stems
+                export_stem_files=args.export_stems,
+                chord_backend=args.chord_backend
             )
         elif args.command == 'batch':
             return self.batch_process(
@@ -130,7 +135,8 @@ class AudioAnalyzerCLI:
                      effects: bool = False,
                      instruments: bool = False,
                      separate: str = 'none',
-                     export_stem_files: bool = False) -> int:
+                     export_stem_files: bool = False,
+                     chord_backend: str = 'simple') -> int:
         """Analyze a single audio file."""
         try:
             print(f"Analyzing audio file: {input_file}")
@@ -156,17 +162,44 @@ class AudioAnalyzerCLI:
             print("\nExtracting features...")
             features = feature_extractor.extract_features(audio, sample_rate)
             
-            # Detect chords
+            # Detect chords (backend selectable)
             print("Detecting chords...")
-            chords = feature_extractor.detect_chords(audio, sample_rate)
-            features['chords'] = [{
-                'root': chord.root.name,
-                'quality': chord.quality,
-                'confidence': chord.confidence,
-                'start_time': chord.start_time,
-                'duration': chord.duration
-            } for chord in chords]
-            features['chord_progression'] = FeatureExtractor.summarize_chord_progression(chords)
+            use_chordino = (chord_backend == 'chordino')
+            chords_list_dict = []
+            chords_for_summary: list = []
+            if use_chordino:
+                chords_list_dict = detect_chords_chordino(input_file)
+                if chords_list_dict:
+                    features['chords'] = chords_list_dict
+                    # Convert to DetectedChord for summarization
+                    note_names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B']
+                    for ch in chords_list_dict:
+                        try:
+                            idx = note_names.index(ch['root'])
+                        except ValueError:
+                            continue
+                        dc = DetectedChord(
+                            root=NoteName(idx),
+                            quality='min' if ch.get('quality','maj') == 'min' else 'maj',
+                            confidence=float(ch.get('confidence', 0.0)),
+                            start_time=float(ch.get('start_time', 0.0)),
+                            duration=float(ch.get('duration', 0.0))
+                        )
+                        chords_for_summary.append(dc)
+                else:
+                    print("Chordino not available or failed; falling back to simple backend.")
+                    use_chordino = False
+            if not use_chordino:
+                chords = feature_extractor.detect_chords(audio, sample_rate)
+                features['chords'] = [{
+                    'root': chord.root.name,
+                    'quality': chord.quality,
+                    'confidence': chord.confidence,
+                    'start_time': chord.start_time,
+                    'duration': chord.duration
+                } for chord in chords]
+                chords_for_summary = chords
+            features['chord_progression'] = FeatureExtractor.summarize_chord_progression(chords_for_summary)
             
             # Detect notes
             print("Detecting notes...")
