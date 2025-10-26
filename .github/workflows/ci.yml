@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, 'feat/**', 'fix/**', 'chore/**' ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install base dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r wav_reverse_engineer/requirements.txt
+          # Optional: install a subset of optional deps if desired
+          # pip install -r wav_reverse_engineer/requirements-optional.txt
+      - name: Run unit tests
+        run: |
+          python -m unittest discover -s wav_reverse_engineer/tests -p 'test_*.py'

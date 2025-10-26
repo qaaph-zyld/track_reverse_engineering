@@ -11,6 +11,8 @@ from typing import Optional, Dict, Any
 
 import numpy as np
 import matplotlib
+import librosa
+import os.path as _osp
 
 # Use non-interactive backend for CLI
 matplotlib.use('Agg')
@@ -21,11 +23,14 @@ sys.path.insert(0, str(Path(__file__).parent.absolute()))
 from audio_analyzer.audio_processor import AudioProcessor
 from audio_analyzer.feature_extractor import FeatureExtractor, DetectedChord, NoteName
 from audio_analyzer.visualizer import AudioVisualizer
-from audio_analyzer.utils import save_analysis_results, ensure_dir
+from audio_analyzer.utils import save_analysis_results, ensure_dir, get_file_hash
 from audio_analyzer.effects_analyzer import analyze_effects
 from audio_analyzer.source_separation import separate_hpss, separate_spleeter, export_stems
 from audio_analyzer.instrument_recognizer import InstrumentRecognizer
 from audio_analyzer.backends.chordino import detect_chords_chordino
+from audio_analyzer.backends.pitch_torchcrepe import track_f0_torchcrepe
+from audio_analyzer.backends.demucs_backend import separate_demucs
+from audio_analyzer.backends.essentia_metrics import compute_essentia_metrics
 
 class AudioAnalyzerCLI:
     """Command-line interface for audio analysis."""
@@ -60,13 +65,24 @@ class AudioAnalyzerCLI:
         analyze_parser.add_argument('--instruments', action='store_true',
                                   help='Run instrument recognition')
         analyze_parser.add_argument('--separate', type=str, default='none',
-                                  choices=['none', 'hpss', 'spleeter2', 'spleeter4', 'spleeter5'],
+                                  choices=['none', 'hpss', 'spleeter2', 'spleeter4', 'spleeter5', 'demucs'],
                                   help='Perform source separation method')
         analyze_parser.add_argument('--export-stems', action='store_true',
                                   help='Export separated stems as audio files')
         analyze_parser.add_argument('--chord-backend', type=str, default='simple',
                                   choices=['simple', 'chordino'],
                                   help='Chord detection backend (default: simple)')
+        analyze_parser.add_argument('--pitch-backend', type=str, default='yin',
+                                  choices=['yin', 'torchcrepe'],
+                                  help='Pitch tracking backend for F0 curve (default: yin)')
+        analyze_parser.add_argument('--essentia', action='store_true',
+                                  help='Compute robust key/loudness using Essentia (if available)')
+        analyze_parser.add_argument('--cache', action='store_true',
+                                  help='Enable result caching to speed up repeated analyses')
+        analyze_parser.add_argument('--cache-dir', type=str, default='.cache',
+                                  help='Directory to store cache files (default: ./.cache)')
+        analyze_parser.add_argument('--config', type=str, default=None,
+                                  help='YAML config file to override options (backends, cache, etc.)')
         
         # Batch process command
         batch_parser = subparsers.add_parser('batch', help='Process multiple audio files')
@@ -97,6 +113,17 @@ class AudioAnalyzerCLI:
         args = self.parser.parse_args(args)
         
         if args.command == 'analyze':
+            # Load config if provided and override CLI args
+            if getattr(args, 'config', None):
+                try:
+                    import yaml
+                    with open(args.config, 'r') as f:
+                        cfg = yaml.safe_load(f) or {}
+                    for k, v in cfg.get('analyze', {}).items():
+                        if hasattr(args, k):
+                            setattr(args, k, v)
+                except Exception as _e:
+                    print(f"Warning: failed to load config {args.config}: {_e}")
             return self.analyze_audio(
                 args.input_file,
                 output_dir=args.output_dir,
@@ -108,7 +135,11 @@ class AudioAnalyzerCLI:
                 instruments=args.instruments,
                 separate=args.separate,
                 export_stem_files=args.export_stems,
-                chord_backend=args.chord_backend
+                chord_backend=args.chord_backend,
+                pitch_backend=args.pitch_backend,
+                use_essentia=args.essentia,
+                use_cache=args.cache,
+                cache_dir=args.cache_dir
             )
         elif args.command == 'batch':
             return self.batch_process(
@@ -136,7 +167,11 @@ class AudioAnalyzerCLI:
                      instruments: bool = False,
                      separate: str = 'none',
                      export_stem_files: bool = False,
-                     chord_backend: str = 'simple') -> int:
+                     chord_backend: str = 'simple',
+                     pitch_backend: str = 'yin',
+                     use_essentia: bool = False,
+                     use_cache: bool = False,
+                     cache_dir: str = '.cache') -> int:
         """Analyze a single audio file."""
         try:
             print(f"Analyzing audio file: {input_file}")
@@ -158,9 +193,38 @@ class AudioAnalyzerCLI:
             # Initialize feature extractor
             feature_extractor = FeatureExtractor()
             
-            # Extract features from the entire audio
-            print("\nExtracting features...")
-            features = feature_extractor.extract_features(audio, sample_rate)
+            # Cache pre-check
+            cache_path = None
+            features = None
+            if use_cache:
+                ensure_dir(cache_dir)
+                file_hash = get_file_hash(input_file)
+                # fingerprint minimal options that affect results
+                fp = json.dumps({
+                    'ver': 1,
+                    'effects': effects,
+                    'instruments': instruments,
+                    'separate': separate,
+                    'chord_backend': chord_backend,
+                    'pitch_backend': pitch_backend,
+                    'essentia': use_essentia
+                }, sort_keys=True)
+                import hashlib
+                opt_hash = hashlib.md5(fp.encode('utf-8')).hexdigest()[:12]
+                cache_basename = f"{os.path.splitext(os.path.basename(input_file))[0]}_{file_hash[:8]}_{opt_hash}.json"
+                cache_path = os.path.join(cache_dir, cache_basename)
+                if os.path.isfile(cache_path):
+                    try:
+                        with open(cache_path, 'r') as cf:
+                            features = json.load(cf)
+                        print(f"Loaded analysis from cache: {cache_path}")
+                    except Exception:
+                        features = None
+
+            # Extract features from the entire audio (if not cached)
+            if features is None:
+                print("\nExtracting features...")
+                features = feature_extractor.extract_features(audio, sample_rate)
             
             # Detect chords (backend selectable)
             print("Detecting chords...")
@@ -206,6 +270,27 @@ class AudioAnalyzerCLI:
             notes = feature_extractor.detect_notes(audio, sample_rate)
             features['notes'] = notes
 
+            # Pitch tracking (F0 curve)
+            print("Tracking pitch (F0)...")
+            if pitch_backend == 'torchcrepe':
+                f0 = track_f0_torchcrepe(audio, sample_rate)
+                if f0:
+                    features['pitch_track'] = f0
+                else:
+                    print("torchcrepe not available; falling back to YIN.")
+                    pitch_backend = 'yin'
+            if pitch_backend == 'yin':
+                f0 = librosa.pyin(
+                    y=audio, fmin=50.0, fmax=1100.0, sr=sample_rate, frame_length=2048, hop_length=256
+                )
+                times = librosa.times_like(f0, sr=sample_rate, hop_length=256)
+                features['pitch_track'] = {
+                    'times': times.tolist(),
+                    'f0_hz': np.nan_to_num(f0, nan=0.0).tolist(),
+                    'sample_rate': sample_rate,
+                    'hop_length': 256
+                }
+
             if effects:
                 print("Running effects analysis...")
                 eff = analyze_effects(audio, sample_rate)
@@ -224,6 +309,9 @@ class AudioAnalyzerCLI:
                 stems_sr = sample_rate
                 if separate == 'hpss':
                     stems = separate_hpss(audio)
+                elif separate == 'demucs':
+                    stems = separate_demucs(input_file)
+                    stems_sr = stems.get('sample_rate', stems_sr)
                 else:
                     try:
                         stems_count = int(separate.replace('spleeter', ''))
@@ -260,6 +348,15 @@ class AudioAnalyzerCLI:
                 json_path = os.path.join(output_dir, f"{audio_basename}_analysis.json")
                 save_analysis_results(features, json_path)
                 print(f"\nAnalysis results saved to: {json_path}")
+
+            # Save to cache if enabled
+            if use_cache and cache_path is not None:
+                try:
+                    with open(cache_path, 'w') as cf:
+                        json.dump(features, cf, indent=2)
+                    print(f"Cached analysis at: {cache_path}")
+                except Exception:
+                    pass
             
             # Export processed audio segments if requested
             if export_audio:
