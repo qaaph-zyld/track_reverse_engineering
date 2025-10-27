@@ -79,6 +79,8 @@ class AudioAnalyzerCLI:
         analyze_parser.add_argument('--notes-backend', type=str, default='librosa',
                                   choices=['librosa', 'basic_pitch'],
                                   help='Notes/transcription backend (default: librosa)')
+        analyze_parser.add_argument('--demucs-model', type=str, default='htdemucs',
+                                  help='Demucs model name (default: htdemucs)')
         analyze_parser.add_argument('--essentia', action='store_true',
                                   help='Compute robust key/loudness using Essentia (if available)')
         analyze_parser.add_argument('--cache', action='store_true',
@@ -146,6 +148,7 @@ class AudioAnalyzerCLI:
                 chord_backend=args.chord_backend,
                 pitch_backend=args.pitch_backend,
                 notes_backend=args.notes_backend,
+                demucs_model=args.demucs_model,
                 use_essentia=args.essentia,
                 use_cache=args.cache,
                 cache_dir=args.cache_dir
@@ -181,6 +184,7 @@ class AudioAnalyzerCLI:
                      chord_backend: str = 'simple',
                      pitch_backend: str = 'yin',
                      notes_backend: str = 'librosa',
+                     demucs_model: str = 'htdemucs',
                      use_essentia: bool = False,
                      use_cache: bool = False,
                      cache_dir: str = '.cache') -> int:
@@ -312,10 +316,16 @@ class AudioAnalyzerCLI:
                     print("torchcrepe not available; falling back to YIN.")
                     pitch_backend = 'yin'
             if pitch_backend == 'yin':
-                f0 = librosa.pyin(
+                _yin = librosa.pyin(
                     y=audio, fmin=50.0, fmax=1100.0, sr=sample_rate, frame_length=2048, hop_length=256
                 )
-                times = librosa.times_like(f0, sr=sample_rate, hop_length=256)
+                if isinstance(_yin, tuple):
+                    f0 = _yin[0]
+                else:
+                    f0 = _yin
+                f0 = np.asarray(f0)
+                n = int(f0.shape[0])
+                times = np.arange(n) * (256.0 / float(sample_rate))
                 features['pitch_track'] = {
                     'times': times.tolist(),
                     'f0_hz': np.nan_to_num(f0, nan=0.0).tolist(),
@@ -342,7 +352,7 @@ class AudioAnalyzerCLI:
                 if separate == 'hpss':
                     stems = separate_hpss(audio)
                 elif separate == 'demucs':
-                    stems = separate_demucs(input_file)
+                    stems = separate_demucs(input_file, model_name=demucs_model)
                     stems_sr = stems.get('sample_rate', stems_sr)
                 else:
                     try:

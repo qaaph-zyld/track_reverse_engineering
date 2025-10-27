@@ -1,10 +1,12 @@
 import os
 import io
+import zipfile
 import json
 import tempfile
 from pathlib import Path
 
 import numpy as np
+import librosa
 import streamlit as st
 import altair as alt
 import pandas as pd
@@ -67,6 +69,7 @@ with col6:
 
 # Notes backend selector
 notes_backend = st.selectbox("Notes Backend", ["librosa", "basic_pitch"], index=0)
+demucs_model = st.selectbox("Demucs Model", ["htdemucs", "htdemucs_ft"], index=0)
 
 analyze_btn = st.button("Analyze")
 
@@ -194,12 +197,32 @@ if uploaded_file and analyze_btn:
             features['instruments'] = inst
             st.table(inst)
 
-        # Optional pitch tracking with torchcrepe
+        # Optional pitch tracking for visualization
         if pitch_backend == 'torchcrepe':
             try:
                 f0 = track_f0_torchcrepe(audio, sr)
                 if f0:
                     features['pitch_track'] = f0
+            except Exception:
+                pass
+        elif pitch_backend == 'yin':
+            try:
+                _yin = librosa.pyin(
+                    y=audio, fmin=50.0, fmax=1100.0, sr=sr, frame_length=2048, hop_length=256
+                )
+                if isinstance(_yin, tuple):
+                    f0 = _yin[0]
+                else:
+                    f0 = _yin
+                f0 = np.asarray(f0)
+                n = int(f0.shape[0])
+                times = np.arange(n) * (256.0 / float(sr))
+                features['pitch_track'] = {
+                    'times': times.tolist(),
+                    'f0_hz': np.nan_to_num(f0, nan=0.0).tolist(),
+                    'sample_rate': sr,
+                    'hop_length': 256
+                }
             except Exception:
                 pass
 
@@ -211,7 +234,7 @@ if uploaded_file and analyze_btn:
                 stems = separate_hpss(audio)
                 stems_sr = sr
             elif separation_method == 'demucs':
-                stems = separate_demucs(temp_path) or {}
+                stems = separate_demucs(temp_path, model_name=demucs_model) or {}
                 stems_sr = stems.get('sample_rate', sr)
             else:
                 try:
@@ -228,6 +251,16 @@ if uploaded_file and analyze_btn:
                 st.write("Exported stems:")
                 for name, path in stems_paths.items():
                     st.write(f"- {name}: {path}")
+                # Offer zipped stems download
+                try:
+                    buf = io.BytesIO()
+                    with zipfile.ZipFile(buf, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+                        for name, path in stems_paths.items():
+                            if isinstance(path, str) and os.path.isfile(path):
+                                zf.write(path, arcname=os.path.basename(path))
+                    st.download_button("Download stems.zip", data=buf.getvalue(), file_name="stems.zip", mime="application/zip")
+                except Exception:
+                    pass
             else:
                 st.info("Spleeter not available or separation failed; try HPSS.")
 
@@ -260,6 +293,44 @@ if uploaded_file and analyze_btn:
         st.subheader("Download Results")
         json_bytes = json.dumps(_to_builtin(features), indent=2).encode('utf-8')
         st.download_button("Download analysis.json", data=json_bytes, file_name="analysis.json", mime="application/json")
+
+        # Optional evaluation (beats/chords)
+        st.subheader("Evaluation (optional)")
+        col_e1, col_e2 = st.columns(2)
+        with col_e1:
+            beat_ref = st.file_uploader("Reference beat times (.txt, one time per line)", type=["txt"], key="beatref")
+            if beat_ref is not None:
+                try:
+                    txt = beat_ref.read().decode('utf-8', errors='ignore')
+                    ref_times = [float(x.strip()) for x in txt.splitlines() if x.strip()]
+                    from evaluation.harness import evaluate_beats
+                    est_times = features.get('beat_times', [])
+                    scores = evaluate_beats(ref_times, est_times)
+                    if scores:
+                        st.json(scores)
+                    else:
+                        st.info("No evaluation scores available (mir_eval missing or empty inputs).")
+                except Exception as _e:
+                    st.warning(f"Beat evaluation failed: {_e}")
+        with col_e2:
+            chord_ref = st.file_uploader("Reference chords CSV (start_time,duration,root,quality)", type=["csv"], key="chordref")
+            if chord_ref is not None:
+                try:
+                    dfc = pd.read_csv(chord_ref)
+                    cols_req = {'start_time','duration','root','quality'}
+                    if cols_req.issubset(set(map(str, dfc.columns))):
+                        ref = dfc[list(cols_req)].to_dict(orient='records')
+                        from evaluation.harness import evaluate_chords
+                        est = features.get('chords', [])
+                        scores = evaluate_chords(ref, est)
+                        if scores:
+                            st.json(scores)
+                        else:
+                            st.info("No evaluation scores available (mir_eval missing or empty inputs).")
+                    else:
+                        st.info("CSV must include columns: start_time,duration,root,quality")
+                except Exception as _e:
+                    st.warning(f"Chord evaluation failed: {_e}")
 
         # Cleanup temp file left on disk
         # (Keep for reproducibility during session)
