@@ -131,12 +131,14 @@ class FeatureExtractor:
         # Get onset times
         onset_times = librosa.times_like(onset_env, sr=sample_rate, hop_length=hop_length)
         
+        beat_times = librosa.frames_to_time(beat_frames, sr=sample_rate, hop_length=hop_length)
         return {
             'tempo': float(tempo),
             'beat_count': len(beat_frames),
             'beats_per_second': len(beat_frames) / (len(audio_data) / sample_rate),
             'onset_strength': float(np.mean(onset_env)),
-            'onset_times': onset_times.tolist()
+            'onset_times': onset_times.tolist(),
+            'beat_times': beat_times.tolist()
         }
     
     @staticmethod

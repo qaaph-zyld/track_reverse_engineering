@@ -31,6 +31,7 @@ from audio_analyzer.backends.chordino import detect_chords_chordino
 from audio_analyzer.backends.pitch_torchcrepe import track_f0_torchcrepe
 from audio_analyzer.backends.demucs_backend import separate_demucs
 from audio_analyzer.backends.essentia_metrics import compute_essentia_metrics
+from audio_analyzer.backends.basic_pitch_backend import transcribe_basic_pitch
 
 class AudioAnalyzerCLI:
     """Command-line interface for audio analysis."""
@@ -75,6 +76,9 @@ class AudioAnalyzerCLI:
         analyze_parser.add_argument('--pitch-backend', type=str, default='yin',
                                   choices=['yin', 'torchcrepe'],
                                   help='Pitch tracking backend for F0 curve (default: yin)')
+        analyze_parser.add_argument('--notes-backend', type=str, default='librosa',
+                                  choices=['librosa', 'basic_pitch'],
+                                  help='Notes/transcription backend (default: librosa)')
         analyze_parser.add_argument('--essentia', action='store_true',
                                   help='Compute robust key/loudness using Essentia (if available)')
         analyze_parser.add_argument('--cache', action='store_true',
@@ -141,6 +145,7 @@ class AudioAnalyzerCLI:
                 export_stem_files=args.export_stems,
                 chord_backend=args.chord_backend,
                 pitch_backend=args.pitch_backend,
+                notes_backend=args.notes_backend,
                 use_essentia=args.essentia,
                 use_cache=args.cache,
                 cache_dir=args.cache_dir
@@ -175,6 +180,7 @@ class AudioAnalyzerCLI:
                      export_stem_files: bool = False,
                      chord_backend: str = 'simple',
                      pitch_backend: str = 'yin',
+                     notes_backend: str = 'librosa',
                      use_essentia: bool = False,
                      use_cache: bool = False,
                      cache_dir: str = '.cache') -> int:
@@ -213,6 +219,7 @@ class AudioAnalyzerCLI:
                     'separate': separate,
                     'chord_backend': chord_backend,
                     'pitch_backend': pitch_backend,
+                    'notes_backend': notes_backend,
                     'essentia': use_essentia
                 }, sort_keys=True)
                 import hashlib
@@ -285,7 +292,14 @@ class AudioAnalyzerCLI:
             
             # Detect notes
             print("Detecting notes...")
-            notes = feature_extractor.detect_notes(audio, sample_rate)
+            notes = []
+            if notes_backend == 'basic_pitch':
+                try:
+                    notes = transcribe_basic_pitch(audio, sample_rate)
+                except Exception:
+                    notes = []
+            if not notes:
+                notes = feature_extractor.detect_notes(audio, sample_rate)
             features['notes'] = notes
 
             # Pitch tracking (F0 curve)

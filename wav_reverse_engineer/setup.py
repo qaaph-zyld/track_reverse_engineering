@@ -41,6 +41,7 @@ setup(
         'essentia': ['essentia; platform_system != "Windows"'],
         'rhythm': ['madmom>=0.16.1; python_version < "3.12"'],
         'panns': ['panns-inference>=0.1.0', 'torch>=1.12.0'],
+        'transcription': ['basic-pitch; platform_system != "Windows"'],
         'api': ['fastapi>=0.109.0', 'uvicorn[standard]>=0.22.0'],
         'evaluation': ['mir_eval>=0.7'],
         'full': [
@@ -48,6 +49,7 @@ setup(
             'spleeter>=2.1.0; python_version < "3.12"',
             'demucs>=4.0.0', 'panns-inference>=0.1.0',
             'essentia; platform_system != "Windows"', 'madmom>=0.16.1; python_version < "3.12"',
+            'basic-pitch; platform_system != "Windows"',
             'fastapi>=0.109.0', 'uvicorn[standard]>=0.22.0', 'mir_eval>=0.7'
         ]
     },

@@ -23,6 +23,7 @@ from audio_analyzer.backends.chordino import detect_chords_chordino
 from audio_analyzer.backends.pitch_torchcrepe import track_f0_torchcrepe
 from audio_analyzer.backends.demucs_backend import separate_demucs
 from audio_analyzer.backends.essentia_metrics import compute_essentia_metrics
+from audio_analyzer.backends.basic_pitch_backend import transcribe_basic_pitch
 
 st.set_page_config(page_title="WAV Reverse Engineering Tool", layout="wide")
 st.title("WAV Reverse Engineering Tool")
@@ -63,6 +64,9 @@ with col5:
     pitch_backend = st.selectbox("Pitch Backend", ["yin", "torchcrepe"], index=0)
 with col6:
     use_essentia = st.checkbox("Essentia metrics", value=False)
+
+# Notes backend selector
+notes_backend = st.selectbox("Notes Backend", ["librosa", "basic_pitch"], index=0)
 
 analyze_btn = st.button("Analyze")
 
@@ -161,7 +165,14 @@ if uploaded_file and analyze_btn:
         st.write("Chord progression (condensed):")
         st.dataframe(progression)
 
-        notes = fe.detect_notes(audio, sr)
+        notes = []
+        if notes_backend == 'basic_pitch':
+            try:
+                notes = transcribe_basic_pitch(audio, sr)
+            except Exception:
+                notes = []
+        if not notes:
+            notes = fe.detect_notes(audio, sr)
         features['notes'] = notes
         with st.expander("Detected notes"):
             st.dataframe(notes)
