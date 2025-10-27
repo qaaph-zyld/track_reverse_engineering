@@ -87,10 +87,40 @@ def compression_index(audio: np.ndarray, sr: int) -> float:
 def loudness_metrics(audio: np.ndarray, sr: int) -> Dict[str, float]:
     if pyln is None:
         return {}
+    # Ensure correct dtype for pyloudnorm
+    y = np.asarray(audio, dtype=np.float64)
     meter = pyln.Meter(sr)
-    loudness = float(meter.integrated_loudness(audio))
-    lra = float(meter.loudness_range(audio))
-    return {"loudness_lufs": loudness, "loudness_range": lra}
+    loudness = float(meter.integrated_loudness(y))
+    lra = None
+    # Some pyloudnorm versions don't expose Meter.loudness_range
+    if hasattr(meter, "loudness_range"):
+        try:
+            lra = float(meter.loudness_range(y))
+        except Exception:
+            lra = None
+    # Try module-level loudness_range/lra if available
+    if lra is None:
+        try:
+            from pyloudnorm import loudness as _pln_loud
+            if hasattr(_pln_loud, "loudness_range"):
+                lra = float(_pln_loud.loudness_range(y, sr))
+            elif hasattr(_pln_loud, "lra"):
+                lra = float(_pln_loud.lra(y, sr))
+        except Exception:
+            lra = None
+    # Fallback: approximate LRA from short-term RMS distribution (3s windows)
+    if lra is None:
+        win = int(3.0 * sr)
+        hop = int(1.0 * sr)
+        st_rms = _short_term_rms(y, win, hop)
+        if st_rms.size > 0:
+            st_db = 20.0 * np.log10(st_rms + 1e-12)
+            p95 = float(np.percentile(st_db, 95))
+            p10 = float(np.percentile(st_db, 10))
+            lra = max(p95 - p10, 0.0)
+        else:
+            lra = 0.0
+    return {"loudness_lufs": loudness, "loudness_range": float(lra)}
 
 
 def analyze_effects(audio: np.ndarray, sr: int) -> Dict[str, Any]:

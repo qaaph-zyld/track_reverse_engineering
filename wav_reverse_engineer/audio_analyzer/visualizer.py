@@ -206,6 +206,14 @@ class AudioVisualizer:
             sr=sample_rate, 
             hop_length=hop_length
         )
+        # Coerce tempo to a scalar float robustly (handles numpy arrays/0-d arrays)
+        try:
+            tempo_scalar = float(np.asarray(tempo).reshape(-1)[0])
+        except Exception:
+            try:
+                tempo_scalar = float(tempo)
+            except Exception:
+                tempo_scalar = 0.0
         
         # Compute onset envelope
         onset_env = librosa.onset.onset_strength(
@@ -219,7 +227,8 @@ class AudioVisualizer:
         
         # Plot
         plt.figure(figsize=(14, 5))
-        plt.plot(times, onset_env / onset_env.max(), label='Onset strength')
+        denom = float(np.max(onset_env)) if np.max(onset_env) > 0 else 1.0
+        plt.plot(times, onset_env / denom, label='Onset strength')
         plt.vlines(
             times[beat_frames], 
             0, 1, 
@@ -228,7 +237,7 @@ class AudioVisualizer:
             linestyle='--', 
             label='Beats'
         )
-        plt.title(f'Beat Tracking (Tempo: {tempo:.2f} BPM)')
+        plt.title(f'Beat Tracking (Tempo: {tempo_scalar:.2f} BPM)')
         plt.xlabel('Time (s)')
         plt.ylabel('Normalized Strength')
         plt.legend()

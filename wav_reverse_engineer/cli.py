@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent.absolute()))
 from audio_analyzer.audio_processor import AudioProcessor
 from audio_analyzer.feature_extractor import FeatureExtractor, DetectedChord, NoteName
 from audio_analyzer.visualizer import AudioVisualizer
-from audio_analyzer.utils import save_analysis_results, ensure_dir, get_file_hash
+from audio_analyzer.utils import save_analysis_results, ensure_dir, get_file_hash, split_audio
 from audio_analyzer.effects_analyzer import analyze_effects
 from audio_analyzer.source_separation import separate_hpss, separate_spleeter, export_stems
 from audio_analyzer.instrument_recognizer import InstrumentRecognizer
@@ -95,6 +95,10 @@ class AudioAnalyzerCLI:
                                 help='Disable visualization generation')
         batch_parser.add_argument('--export-json', action='store_true',
                                 help='Export analysis results as JSON')
+        batch_parser.add_argument('--jobs', type=int, default=1,
+                                help='Number of parallel workers (default: 1)')
+        batch_parser.add_argument('--resume', action='store_true',
+                                help='Skip files that already have output JSON in their folder')
         
         # Version command
         subparsers.add_parser('version', help='Show version information')
@@ -147,7 +151,9 @@ class AudioAnalyzerCLI:
                 output_dir=args.output_dir,
                 file_extension=args.ext,
                 generate_visualizations=not args.no_vis,
-                export_json=args.export_json
+                export_json=args.export_json,
+                jobs=args.jobs,
+                resume=args.resume
             )
         elif args.command == 'version':
             self._print_version()
@@ -225,6 +231,18 @@ class AudioAnalyzerCLI:
             if features is None:
                 print("\nExtracting features...")
                 features = feature_extractor.extract_features(audio, sample_rate)
+            
+            # Optional: Essentia metrics (robust key/loudness) if requested
+            if use_essentia:
+                try:
+                    ess = compute_essentia_metrics(audio, sample_rate)
+                    if ess:
+                        features.update(ess)
+                        # If Essentia provided key/mode, include a consolidated display field
+                        if 'essentia_key' in ess or 'essentia_mode' in ess:
+                            features['key_display'] = f"{ess.get('essentia_key', features.get('key','?'))} {ess.get('essentia_mode', features.get('mode',''))}".strip()
+                except Exception:
+                    pass
             
             # Detect chords (backend selectable)
             print("Detecting chords...")
@@ -364,7 +382,7 @@ class AudioAnalyzerCLI:
                 ensure_dir(audio_dir)
                 
                 # Split audio into segments
-                segments = audio_processor.split_audio(audio, sample_rate, segment_duration)
+                segments = split_audio(audio, sample_rate, segment_duration)
                 
                 for i, segment in enumerate(segments):
                     segment_path = os.path.join(
@@ -389,7 +407,9 @@ class AudioAnalyzerCLI:
                      output_dir: str = 'batch_output',
                      file_extension: str = 'wav',
                      generate_visualizations: bool = True,
-                     export_json: bool = False) -> int:
+                     export_json: bool = False,
+                     jobs: int = 1,
+                     resume: bool = False) -> int:
         """Process multiple audio files in a directory."""
         try:
             if not os.path.isdir(input_dir):
@@ -408,28 +428,53 @@ class AudioAnalyzerCLI:
             
             print(f"Found {len(audio_files)} audio files to process.")
             
-            # Process each file
+            # Resume: skip files that already have JSON output
+            if resume and export_json:
+                to_process = []
+                for f in audio_files:
+                    base = os.path.splitext(os.path.basename(f))[0]
+                    out_dir = os.path.join(output_dir, base)
+                    json_path = os.path.join(out_dir, f"{base}_analysis.json")
+                    if os.path.isfile(json_path):
+                        print(f"Skipping (resume): {f}")
+                        continue
+                    to_process.append(f)
+                audio_files = to_process
+                if not audio_files:
+                    print("Nothing to process after resume filter.")
+                    return 0
+
+            # Process each file (optionally in parallel)
             results = {}
-            for i, audio_file in enumerate(audio_files, 1):
-                print(f"\nProcessing file {i}/{len(audio_files)}: {os.path.basename(audio_file)}")
-                
-                # Create a subdirectory for this file's output
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            def _process_one(audio_file: str) -> tuple:
                 file_basename = os.path.splitext(os.path.basename(audio_file))[0]
                 file_output_dir = os.path.join(output_dir, file_basename)
                 ensure_dir(file_output_dir)
-                
-                # Analyze the file
-                result = self.analyze_audio(
+                ret = self.analyze_audio(
                     audio_file,
                     output_dir=file_output_dir,
                     generate_visualizations=generate_visualizations,
                     export_json=export_json
                 )
-                
-                if result != 0:
-                    print(f"Warning: Failed to process {audio_file}", file=sys.stderr)
-                
-                results[audio_file] = 'Success' if result == 0 else 'Failed'
+                return audio_file, ret
+
+            total = len(audio_files)
+            print(f"Processing {total} files with jobs={jobs}...")
+            if jobs <= 1:
+                for i, f in enumerate(audio_files, 1):
+                    print(f"\n[{i}/{total}] {os.path.basename(f)}")
+                    k, ret = _process_one(f)
+                    results[k] = 'Success' if ret == 0 else 'Failed'
+            else:
+                with ThreadPoolExecutor(max_workers=max(1, jobs)) as ex:
+                    futs = {ex.submit(_process_one, f): f for f in audio_files}
+                    done = 0
+                    for fut in as_completed(futs):
+                        k, ret = fut.result()
+                        done += 1
+                        print(f"[{done}/{total}] {os.path.basename(k)} -> {'OK' if ret == 0 else 'FAIL'}")
+                        results[k] = 'Success' if ret == 0 else 'Failed'
             
             # Print summary
             print("\nBatch processing complete!")

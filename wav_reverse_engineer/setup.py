@@ -31,18 +31,29 @@ setup(
     ],
     extras_require={
         'pitch': ['torch>=1.12.0', 'torchcrepe>=0.0.22'],
-        'separation': ['spleeter>=2.4.0', 'demucs>=4.0.0', 'torch>=1.12.0'],
-        'essentia': ['essentia'],
-        'rhythm': ['madmom>=0.16.1'],
+        # Spleeter has limited Python support; skip on Python >=3.12
+        'separation': [
+            'spleeter>=2.1.0; python_version < "3.12"',
+            'demucs>=4.0.0',
+            'torch>=1.12.0'
+        ],
+        # Essentia wheels are not available on Windows via pip; skip on Windows
+        'essentia': ['essentia; platform_system != "Windows"'],
+        'rhythm': ['madmom>=0.16.1; python_version < "3.12"'],
         'panns': ['panns-inference>=0.1.0', 'torch>=1.12.0'],
+        'api': ['fastapi>=0.109.0', 'uvicorn[standard]>=0.22.0'],
+        'evaluation': ['mir_eval>=0.7'],
         'full': [
-            'torch>=1.12.0', 'torchcrepe>=0.0.22', 'spleeter>=2.4.0',
-            'demucs>=4.0.0', 'panns-inference>=0.1.0', 'essentia', 'madmom>=0.16.1'
+            'torch>=1.12.0', 'torchcrepe>=0.0.22',
+            'spleeter>=2.1.0; python_version < "3.12"',
+            'demucs>=4.0.0', 'panns-inference>=0.1.0',
+            'essentia; platform_system != "Windows"', 'madmom>=0.16.1; python_version < "3.12"',
+            'fastapi>=0.109.0', 'uvicorn[standard]>=0.22.0', 'mir_eval>=0.7'
         ]
     },
     entry_points={
         'console_scripts': [
-            'wav-reverse-engineer=cli:main',
+            'wav-reverse-engineer=wav_reverse_engineer.cli:main',
         ],
     },
     classifiers=[

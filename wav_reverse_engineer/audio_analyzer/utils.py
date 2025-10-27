@@ -1,6 +1,4 @@
-""
-Utility functions for audio analysis.
-"""
+"""Utility functions for audio analysis."""
 
 import os
 import numpy as np
