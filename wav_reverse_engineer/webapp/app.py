@@ -10,6 +10,8 @@ import librosa
 import streamlit as st
 import altair as alt
 import pandas as pd
+import matplotlib.pyplot as plt
+import librosa.display as ld
 
 # Ensure we can import the local package
 import sys
@@ -69,7 +71,9 @@ with col6:
 
 # Notes backend selector
 notes_backend = st.selectbox("Notes Backend", ["librosa", "basic_pitch"], index=0)
-demucs_model = st.selectbox("Demucs Model", ["htdemucs", "htdemucs_ft"], index=0)
+demucs_model = st.selectbox("Demucs Model", ["htdemucs", "htdemucs_ft", "hdemucs_mmi", "htdemucs_6s"], index=0)
+demucs_device = st.selectbox("Demucs Device", ["auto", "cpu", "cuda"], index=0)
+demucs_chunk = st.number_input("Demucs chunk seconds (0 = full)", min_value=0.0, max_value=120.0, value=0.0, step=1.0)
 
 analyze_btn = st.button("Analyze")
 
@@ -234,7 +238,7 @@ if uploaded_file and analyze_btn:
                 stems = separate_hpss(audio)
                 stems_sr = sr
             elif separation_method == 'demucs':
-                stems = separate_demucs(temp_path, model_name=demucs_model) or {}
+                stems = separate_demucs(temp_path, model_name=demucs_model, device=demucs_device, chunk_seconds=(demucs_chunk or None)) or {}
                 stems_sr = stems.get('sample_rate', sr)
             else:
                 try:
@@ -286,6 +290,21 @@ if uploaded_file and analyze_btn:
                 })
                 chart = alt.Chart(df).mark_line().encode(x='time_s:Q', y='f0_hz:Q').properties(height=200)
                 st.altair_chart(chart, use_container_width=True)
+            except Exception:
+                pass
+
+        if features.get('pitch_track'):
+            try:
+                S = librosa.feature.melspectrogram(y=audio, sr=sr, n_mels=128, hop_length=256)
+                Sdb = librosa.power_to_db(S, ref=np.max)
+                fig, ax = plt.subplots(figsize=(8, 3))
+                ld.specshow(Sdb, x_axis='time', y_axis='mel', sr=sr, hop_length=256, ax=ax)
+                t = np.asarray(features['pitch_track'].get('times', []), dtype=float)
+                f0 = np.asarray(features['pitch_track'].get('f0_hz', []), dtype=float)
+                f0 = np.where(np.asarray(f0) > 0, f0, np.nan)
+                ax.plot(t, f0, color='w', linewidth=1.0, alpha=0.9)
+                ax.set_title('Mel Spectrogram with Pitch Track')
+                st.pyplot(fig, clear_figure=True)
             except Exception:
                 pass
 
