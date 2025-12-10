@@ -34,13 +34,13 @@ pip install -e ".[full]"
 ### Analyze a Local File
 
 ```bash
-wav-reverse-engineer analyze path/to/audio.wav --export-json
+wav-reverse-engineer analyze path/to/audio.wav --export-json --summary
 ```
 
 ### Analyze a YouTube Video (NEW!)
 
 ```bash
-wav-reverse-engineer yt-analyze "https://www.youtube.com/watch?v=VIDEO_ID" --export-json
+wav-reverse-engineer yt-analyze "https://www.youtube.com/watch?v=VIDEO_ID" --export-json --summary
 ```
 
 Options:
@@ -48,6 +48,7 @@ Options:
 - `--effects` — Run advanced effects analysis
 - `--instruments` — Run instrument recognition
 - `--separate hpss|demucs` — Perform source separation
+ - `--summary` — Print a concise human-readable summary after analysis
 
 ### Python API
 
@@ -103,8 +104,8 @@ curl -X POST "http://localhost:8000/analyze-youtube" \
 
 | Command | Description |
 |---------|-------------|
-| `analyze <file>` | Analyze a local audio file |
-| `yt-analyze <url>` | Analyze audio from a YouTube URL |
+| `analyze <file>` | Analyze a local audio file (use `--summary` for a human-readable report) |
+| `yt-analyze <url>` | Analyze audio from a YouTube URL (use `--summary` for a human-readable report) |
 | `batch <dir>` | Process multiple files in a directory |
 | `version` | Show version information |
 

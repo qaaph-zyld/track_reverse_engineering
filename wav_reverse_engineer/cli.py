@@ -61,6 +61,8 @@ class AudioAnalyzerCLI:
                                   help='Export analysis results as JSON')
         analyze_parser.add_argument('--export-audio', action='store_true',
                                   help='Export processed audio segments')
+        analyze_parser.add_argument('--summary', action='store_true',
+                                  help='Print a human-readable summary of the analysis')
         analyze_parser.add_argument('--effects', action='store_true',
                                   help='Run advanced effects analysis')
         analyze_parser.add_argument('--instruments', action='store_true',
@@ -168,6 +170,7 @@ class AudioAnalyzerCLI:
                 segment_duration=args.segment_duration,
                 export_json=args.export_json,
                 export_audio=args.export_audio,
+                print_summary=args.summary,
                 effects=args.effects,
                 instruments=args.instruments,
                 separate=args.separate,
@@ -196,6 +199,7 @@ class AudioAnalyzerCLI:
                 output_dir=args.output_dir,
                 generate_visualizations=not args.no_vis,
                 export_json=args.export_json,
+                print_summary=args.summary,
                 effects=args.effects,
                 instruments=args.instruments,
                 separate=args.separate,
@@ -218,6 +222,7 @@ class AudioAnalyzerCLI:
                      segment_duration: float = 30.0,
                      export_json: bool = False,
                      export_audio: bool = False,
+                     print_summary: bool = False,
                      effects: bool = False,
                      instruments: bool = False,
                      separate: str = 'none',
@@ -432,6 +437,11 @@ class AudioAnalyzerCLI:
                 save_analysis_results(features, json_path)
                 print(f"\nAnalysis results saved to: {json_path}")
 
+            # Optional human-readable summary
+            if print_summary:
+                print("\n=== Analysis Summary ===")
+                self._print_feature_summary(features)
+
             # Save to cache if enabled
             if use_cache and cache_path is not None:
                 try:
@@ -558,6 +568,7 @@ class AudioAnalyzerCLI:
                         output_dir: str = 'output',
                         generate_visualizations: bool = True,
                         export_json: bool = True,
+                        print_summary: bool = False,
                         effects: bool = False,
                         instruments: bool = False,
                         separate: str = 'none',
@@ -596,6 +607,7 @@ class AudioAnalyzerCLI:
                 output_dir=output_dir,
                 generate_visualizations=generate_visualizations,
                 export_json=export_json,
+                print_summary=print_summary,
                 effects=effects,
                 instruments=instruments,
                 separate=separate,
@@ -626,6 +638,61 @@ class AudioAnalyzerCLI:
         except Exception as e:
             print(f"\nError analyzing YouTube video: {str(e)}", file=sys.stderr)
             return 1
+
+    def _print_feature_summary(self, features: Dict[str, Any]) -> None:
+        """Print a concise human-readable summary from the features dict."""
+        try:
+            duration = features.get('duration') or features.get('duration_seconds')
+            tempo = features.get('tempo')
+            key = features.get('key')
+            mode = features.get('mode')
+            rms = features.get('rms_energy')
+            peak = features.get('peak_amplitude') or features.get('peak')
+
+            print("Track:")
+            if duration is not None:
+                print(f"  Duration: {duration:.2f} s")
+            if tempo is not None:
+                print(f"  Tempo: {tempo:.1f} BPM")
+            if key is not None:
+                if mode:
+                    print(f"  Key: {key} {mode}")
+                else:
+                    print(f"  Key: {key}")
+            if rms is not None:
+                print(f"  RMS level: {rms:.4f}")
+            if peak is not None:
+                print(f"  Peak amplitude: {peak:.4f}")
+
+            # Chord progression summary
+            progression = features.get('chord_progression')
+            if progression:
+                # progression might be a list or formatted string
+                if isinstance(progression, list):
+                    preview = progression[:8]
+                    prog_str = ' - '.join(str(p) for p in preview)
+                else:
+                    prog_str = str(progression)
+                print("\nHarmony:")
+                print(f"  Chord progression (preview): {prog_str}")
+
+            # Instruments
+            instruments = features.get('instruments')
+            if instruments:
+                if isinstance(instruments, dict):
+                    # assume {instrument: score}
+                    top = sorted(instruments.items(), key=lambda kv: kv[1], reverse=True)[:5]
+                    inst_str = ', '.join(f"{k} ({v:.2f})" for k, v in top)
+                elif isinstance(instruments, list):
+                    inst_str = ', '.join(str(i) for i in instruments[:5])
+                else:
+                    inst_str = str(instruments)
+                print("\nInstrumentation:")
+                print(f"  Likely instruments: {inst_str}")
+
+        except Exception as _e:
+            # Fail silently; summary is best-effort only
+            pass
 
     def _print_version(self):
         """Print version information."""

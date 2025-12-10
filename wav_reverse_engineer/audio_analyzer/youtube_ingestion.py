@@ -9,6 +9,7 @@ import tempfile
 import hashlib
 from typing import Optional, Dict, Any, Tuple
 from pathlib import Path
+from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
 
 try:
     import yt_dlp
@@ -42,6 +43,37 @@ class YouTubeIngestion:
         self.keep_files = keep_files
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)
 
+    def _normalize_url(self, url: str) -> str:
+        """Normalize various YouTube URL forms to a canonical watch URL.
+
+        This helps avoid surprises with playlist/radio URLs by always
+        targeting a single video ID when possible.
+        """
+        try:
+            parsed = urlparse(url)
+            netloc = (parsed.netloc or '').lower()
+
+            # Short links: youtu.be/<id>
+            if 'youtu.be' in netloc and parsed.path:
+                video_id = parsed.path.lstrip('/')
+                if video_id:
+                    return f"https://www.youtube.com/watch?v={video_id}"
+
+            # Standard watch URLs: keep only the v parameter
+            if 'youtube.com' in netloc and parsed.path.startswith('/watch'):
+                qs = parse_qs(parsed.query or '')
+                video_id = qs.get('v', [None])[0]
+                if video_id:
+                    new_qs = urlencode({'v': video_id})
+                    normalized = parsed._replace(query=new_qs)
+                    return urlunparse(normalized)
+
+            # Fallback: return original URL unchanged
+            return url
+        except Exception:
+            # If anything goes wrong, do not block on normalization
+            return url
+
     def _get_ydl_opts(self, output_path: str) -> Dict[str, Any]:
         """Get yt-dlp options for audio extraction."""
         return {
@@ -67,15 +99,26 @@ class YouTubeIngestion:
         Returns:
             Dictionary containing video metadata (title, duration, etc.)
         """
+        norm_url = self._normalize_url(url)
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
             'extract_flat': False,
         }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(norm_url, download=False)
+        except Exception as e:
+            msg = str(e)
+            if 'rate-limited' in msg or "This content isn't available, try again later" in msg:
+                raise RuntimeError(
+                    "YouTube rate-limited this session. Try again later "
+                    "or download the audio manually and run the 'analyze' "
+                    "command on the local file."
+                ) from e
+            raise
+
         return {
             'id': info.get('id', ''),
             'title': info.get('title', 'Unknown'),
@@ -85,7 +128,7 @@ class YouTubeIngestion:
             'upload_date': info.get('upload_date', ''),
             'description': info.get('description', '')[:500],  # Truncate
             'thumbnail': info.get('thumbnail', ''),
-            'url': url,
+            'url': norm_url,
         }
 
     def download_audio(self, url: str, filename: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
@@ -100,14 +143,15 @@ class YouTubeIngestion:
         Returns:
             Tuple of (path_to_wav_file, video_metadata)
         """
-        # Get video info first
-        info = self.get_video_info(url)
+        # Normalize URL and get video info first
+        norm_url = self._normalize_url(url)
+        info = self.get_video_info(norm_url)
         video_id = info['id']
         
         # Generate filename
         if filename is None:
-            # Use video ID + hash of URL for uniqueness
-            url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
+            # Use video ID + hash of normalized URL for uniqueness
+            url_hash = hashlib.md5(norm_url.encode()).hexdigest()[:8]
             filename = f"yt_{video_id}_{url_hash}"
         
         # Clean filename
@@ -122,9 +166,19 @@ class YouTubeIngestion:
         
         # Download with yt-dlp
         ydl_opts = self._get_ydl_opts(output_template)
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([norm_url])
+        except Exception as e:
+            msg = str(e)
+            if 'rate-limited' in msg or "This content isn't available, try again later" in msg:
+                raise RuntimeError(
+                    "YouTube rate-limited this session while downloading audio. "
+                    "Wait and retry later, or download the audio separately "
+                    "and run the 'analyze' command on the local file."
+                ) from e
+            raise
         
         # yt-dlp may add extension, find the actual file
         if not os.path.exists(output_wav):
