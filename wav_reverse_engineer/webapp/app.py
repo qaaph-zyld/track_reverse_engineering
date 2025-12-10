@@ -28,6 +28,7 @@ from audio_analyzer.backends.pitch_torchcrepe import track_f0_torchcrepe
 from audio_analyzer.backends.demucs_backend import separate_demucs
 from audio_analyzer.backends.essentia_metrics import compute_essentia_metrics
 from audio_analyzer.backends.basic_pitch_backend import transcribe_basic_pitch
+from audio_analyzer.youtube_ingestion import YouTubeIngestion
 
 st.set_page_config(page_title="WAV Reverse Engineering Tool", layout="wide")
 st.title("WAV Reverse Engineering Tool")
@@ -48,6 +49,7 @@ def _to_builtin(obj):
     return obj
 
 uploaded_file = st.file_uploader("Upload an audio file (WAV/MP3)", type=["wav", "mp3", "flac", "ogg"])
+youtube_url = st.text_input("Or paste a YouTube URL", "")
 
 col1, col2, col3 = st.columns(3)
 with col1:
@@ -77,29 +79,57 @@ demucs_chunk = st.number_input("Demucs chunk seconds (0 = full)", min_value=0.0,
 
 analyze_btn = st.button("Analyze")
 
-if uploaded_file and analyze_btn:
+if analyze_btn and (uploaded_file or youtube_url.strip()):
     with st.spinner("Processing audio..."):
-        # Save to temp file
-        suffix = f".{uploaded_file.name.split('.')[-1].lower()}"
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(uploaded_file.read())
-            temp_path = tmp.name
+        temp_path = None
         audio_bytes = None
-        try:
-            audio_bytes = Path(temp_path).read_bytes()
-        except Exception:
-            pass
+        video_info = None
 
-        # Show audio player
+        if uploaded_file:
+            suffix = f".{uploaded_file.name.split('.')[-1].lower()}"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(uploaded_file.read())
+                temp_path = tmp.name
+            try:
+                audio_bytes = Path(temp_path).read_bytes()
+            except Exception:
+                pass
+        else:
+            url = youtube_url.strip()
+            try:
+                yt = YouTubeIngestion(output_dir=tempfile.gettempdir(), keep_files=True)
+                temp_path, video_info = yt.download_audio(url)
+                try:
+                    audio_bytes = Path(temp_path).read_bytes()
+                except Exception:
+                    pass
+            except Exception as e:
+                st.error(f"Failed to download or process YouTube URL: {e}")
+                temp_path = None
+
+        if not temp_path:
+            st.stop()
+
         if audio_bytes:
             st.audio(audio_bytes)
 
-        # Load and analyze
+        if video_info:
+            st.subheader("YouTube Metadata")
+            vcols = st.columns(2)
+            vcols[0].write(f"Title: {video_info.get('title', 'Unknown')}")
+            vcols[0].write(f"Uploader: {video_info.get('uploader', 'Unknown')}")
+            vcols[1].write(f"Duration: {video_info.get('duration', 0)} s")
+            views = video_info.get('view_count')
+            if views is not None:
+                vcols[1].write(f"Views: {views}")
+
         ap = AudioProcessor()
         audio, sr = ap.load_audio(temp_path, target_sr=22050, mono=True)
 
         fe = FeatureExtractor()
         features = fe.extract_features(audio, sr)
+        if video_info:
+            features['youtube'] = video_info
         if use_essentia:
             try:
                 ess = compute_essentia_metrics(audio, sr)
