@@ -165,3 +165,161 @@ async def analyze(
             os.unlink(temp_path)
         except Exception:
             pass
+
+
+@app.post("/analyze-youtube")
+async def analyze_youtube(
+    url: str = Form(...),
+    effects: bool = Form(False),
+    instruments: bool = Form(False),
+    essentia: bool = Form(False),
+    chord_backend: str = Form("simple"),
+    pitch_backend: str = Form("yin"),
+    notes_backend: str = Form("librosa"),
+    separate: str = Form("none"),
+    keep_audio: bool = Form(False),
+):
+    """
+    Analyze audio from a YouTube URL.
+    
+    Downloads the audio, runs analysis, and returns features + video metadata.
+    """
+    try:
+        from ..audio_analyzer.youtube_ingestion import YouTubeIngestion
+    except ImportError:
+        return JSONResponse(
+            {"error": "yt-dlp is required. Install with: pip install yt-dlp"},
+            status_code=500
+        )
+    
+    temp_dir = tempfile.mkdtemp(prefix="yt_analyze_")
+    audio_path = None
+    
+    try:
+        # Download audio from YouTube
+        yt = YouTubeIngestion(output_dir=temp_dir, keep_files=True)
+        audio_path, video_info = yt.download_audio(url)
+        
+        # Run analysis
+        ap = AudioProcessor()
+        y, sr = ap.load_audio(audio_path, target_sr=22050, mono=True)
+        fe = FeatureExtractor()
+        features = fe.extract_features(y, sr)
+        
+        # Add video metadata
+        features['youtube'] = {
+            'id': video_info.get('id', ''),
+            'title': video_info.get('title', 'Unknown'),
+            'duration': video_info.get('duration', 0),
+            'uploader': video_info.get('uploader', 'Unknown'),
+            'url': url,
+        }
+        
+        if essentia:
+            try:
+                ess = compute_essentia_metrics(y, sr)
+                if ess:
+                    features.update(ess)
+            except Exception:
+                pass
+        
+        # Chords
+        chords_list = []
+        if chord_backend == 'chordino':
+            try:
+                chords_list = detect_chords_chordino(audio_path)
+            except Exception:
+                chords_list = []
+        if chords_list:
+            features['chords'] = chords_list
+        else:
+            chords = fe.detect_chords(y, sr)
+            features['chords'] = [{
+                'root': ch.root.name,
+                'quality': ch.quality,
+                'confidence': ch.confidence,
+                'start_time': ch.start_time,
+                'duration': ch.duration
+            } for ch in chords]
+            features['chord_progression'] = FeatureExtractor.summarize_chord_progression(chords)
+        
+        # Notes
+        notes = []
+        if notes_backend == 'basic_pitch':
+            try:
+                notes = transcribe_basic_pitch(y, sr)
+            except Exception:
+                notes = []
+        if not notes:
+            features['notes'] = fe.detect_notes(y, sr)
+        else:
+            features['notes'] = notes
+        
+        if effects:
+            try:
+                features['effects'] = analyze_effects(y, sr)
+            except Exception as e:
+                features['effects_error'] = str(e)
+        
+        if instruments:
+            recog = InstrumentRecognizer()
+            features['instruments'] = recog.recognize(y, sr)
+        
+        # Pitch tracking
+        if pitch_backend == 'torchcrepe':
+            try:
+                f0 = track_f0_torchcrepe(y, sr)
+                if f0:
+                    features['pitch_track'] = f0
+            except Exception:
+                pass
+        elif pitch_backend == 'yin':
+            try:
+                import numpy as _np
+                import librosa as _lb
+                _yin = _lb.pyin(y=y, fmin=50.0, fmax=1100.0, sr=sr, frame_length=2048, hop_length=256)
+                if isinstance(_yin, tuple):
+                    f0_arr = _yin[0]
+                else:
+                    f0_arr = _yin
+                f0_arr = _np.asarray(f0_arr)
+                n = int(f0_arr.shape[0])
+                times = _np.arange(n) * (256.0 / float(sr))
+                features['pitch_track'] = {
+                    'times': times.tolist(),
+                    'f0_hz': _np.nan_to_num(f0_arr, nan=0.0).tolist(),
+                    'sample_rate': sr,
+                    'hop_length': 256
+                }
+            except Exception:
+                pass
+        
+        # Separation
+        if separate and separate != 'none':
+            try:
+                if separate == 'hpss':
+                    stems = separate_hpss(y)
+                    if stems:
+                        features['stems'] = [k for k in stems.keys() if k != 'sample_rate']
+                elif separate == 'demucs':
+                    stems = separate_demucs(audio_path, model_name='htdemucs')
+                    if stems:
+                        features['stems'] = [k for k in stems.keys() if k != 'sample_rate']
+            except Exception:
+                pass
+        
+        return JSONResponse(_to_builtin(features))
+        
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to analyze YouTube video: {str(e)}"},
+            status_code=500
+        )
+    finally:
+        # Cleanup
+        if not keep_audio:
+            try:
+                import shutil
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            except Exception:
+                pass

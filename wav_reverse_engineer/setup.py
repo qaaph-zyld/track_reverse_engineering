@@ -28,6 +28,7 @@ setup(
         'python-rtmidi>=1.4.9',
         'streamlit>=1.35.0',
         'pyloudnorm>=0.1.0',
+        'yt-dlp>=2024.1.0',
     ],
     extras_require={
         'pitch': ['torch>=1.12.0', 'torchcrepe>=0.0.22'],
@@ -44,13 +45,15 @@ setup(
         'transcription': ['basic-pitch; platform_system != "Windows"'],
         'api': ['fastapi>=0.109.0', 'uvicorn[standard]>=0.22.0'],
         'evaluation': ['mir_eval>=0.7'],
+        'youtube': ['yt-dlp>=2024.1.0'],
         'full': [
             'torch>=1.12.0', 'torchcrepe>=0.0.22',
             'spleeter>=2.1.0; python_version < "3.12"',
             'demucs>=4.0.0', 'panns-inference>=0.1.0',
             'essentia; platform_system != "Windows"', 'madmom>=0.16.1; python_version < "3.12"',
             'basic-pitch; platform_system != "Windows"',
-            'fastapi>=0.109.0', 'uvicorn[standard]>=0.22.0', 'mir_eval>=0.7'
+            'fastapi>=0.109.0', 'uvicorn[standard]>=0.22.0', 'mir_eval>=0.7',
+            'yt-dlp>=2024.1.0'
         ]
     },
     entry_points={

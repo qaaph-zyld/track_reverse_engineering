@@ -106,6 +106,33 @@ class AudioAnalyzerCLI:
         batch_parser.add_argument('--resume', action='store_true',
                                 help='Skip files that already have output JSON in their folder')
         
+        # YouTube analyze command
+        yt_parser = subparsers.add_parser('yt-analyze', help='Analyze audio from a YouTube URL')
+        yt_parser.add_argument('url', type=str, help='YouTube video URL')
+        yt_parser.add_argument('-o', '--output-dir', type=str, default='output',
+                              help='Output directory for analysis results (default: ./output)')
+        yt_parser.add_argument('--no-vis', action='store_true',
+                              help='Disable visualization generation')
+        yt_parser.add_argument('--export-json', action='store_true',
+                              help='Export analysis results as JSON')
+        yt_parser.add_argument('--effects', action='store_true',
+                              help='Run advanced effects analysis')
+        yt_parser.add_argument('--instruments', action='store_true',
+                              help='Run instrument recognition')
+        yt_parser.add_argument('--separate', type=str, default='none',
+                              choices=['none', 'hpss', 'spleeter2', 'spleeter4', 'spleeter5', 'demucs'],
+                              help='Perform source separation method')
+        yt_parser.add_argument('--export-stems', action='store_true',
+                              help='Export separated stems as audio files')
+        yt_parser.add_argument('--keep-audio', action='store_true',
+                              help='Keep downloaded audio file after analysis')
+        yt_parser.add_argument('--chord-backend', type=str, default='simple',
+                              choices=['simple', 'chordino'],
+                              help='Chord detection backend (default: simple)')
+        yt_parser.add_argument('--pitch-backend', type=str, default='yin',
+                              choices=['yin', 'torchcrepe'],
+                              help='Pitch tracking backend (default: yin)')
+        
         # Version command
         subparsers.add_parser('version', help='Show version information')
         
@@ -162,6 +189,20 @@ class AudioAnalyzerCLI:
                 export_json=args.export_json,
                 jobs=args.jobs,
                 resume=args.resume
+            )
+        elif args.command == 'yt-analyze':
+            return self.analyze_youtube(
+                args.url,
+                output_dir=args.output_dir,
+                generate_visualizations=not args.no_vis,
+                export_json=args.export_json,
+                effects=args.effects,
+                instruments=args.instruments,
+                separate=args.separate,
+                export_stem_files=args.export_stems,
+                keep_audio=args.keep_audio,
+                chord_backend=args.chord_backend,
+                pitch_backend=args.pitch_backend
             )
         elif args.command == 'version':
             self._print_version()
@@ -512,6 +553,80 @@ class AudioAnalyzerCLI:
             print(f"\nError during batch processing: {str(e)}", file=sys.stderr)
             return 1
     
+    def analyze_youtube(self,
+                        url: str,
+                        output_dir: str = 'output',
+                        generate_visualizations: bool = True,
+                        export_json: bool = True,
+                        effects: bool = False,
+                        instruments: bool = False,
+                        separate: str = 'none',
+                        export_stem_files: bool = False,
+                        keep_audio: bool = False,
+                        chord_backend: str = 'simple',
+                        pitch_backend: str = 'yin') -> int:
+        """
+        Analyze audio from a YouTube URL.
+        
+        Downloads audio from YouTube, runs full analysis, and optionally
+        cleans up the downloaded file.
+        """
+        try:
+            from audio_analyzer.youtube_ingestion import YouTubeIngestion
+            
+            print(f"Analyzing YouTube video: {url}")
+            print("-" * 50)
+            
+            # Initialize YouTube ingestion
+            yt = YouTubeIngestion(output_dir=output_dir, keep_files=keep_audio)
+            
+            # Get video info and download audio
+            print("Fetching video information...")
+            audio_path, video_info = yt.download_audio(url)
+            
+            print(f"\nVideo: {video_info.get('title', 'Unknown')}")
+            print(f"Duration: {video_info.get('duration', 0)} seconds")
+            print(f"Uploader: {video_info.get('uploader', 'Unknown')}")
+            print(f"Downloaded audio: {audio_path}")
+            print("-" * 50)
+            
+            # Run the standard audio analysis
+            result = self.analyze_audio(
+                input_file=audio_path,
+                output_dir=output_dir,
+                generate_visualizations=generate_visualizations,
+                export_json=export_json,
+                effects=effects,
+                instruments=instruments,
+                separate=separate,
+                export_stem_files=export_stem_files,
+                chord_backend=chord_backend,
+                pitch_backend=pitch_backend
+            )
+            
+            # Save video metadata alongside analysis
+            if export_json:
+                import json
+                meta_path = os.path.join(output_dir, 'youtube_metadata.json')
+                with open(meta_path, 'w', encoding='utf-8') as f:
+                    json.dump(video_info, f, indent=2, ensure_ascii=False)
+                print(f"YouTube metadata saved to: {meta_path}")
+            
+            # Cleanup if not keeping audio
+            if not keep_audio:
+                yt.cleanup(audio_path)
+                print("Downloaded audio file cleaned up.")
+            
+            return result
+            
+        except ImportError as e:
+            print(f"\nError: {e}", file=sys.stderr)
+            print("Install yt-dlp with: pip install yt-dlp", file=sys.stderr)
+            return 1
+        except Exception as e:
+            print(f"\nError analyzing YouTube video: {str(e)}", file=sys.stderr)
+            return 1
+
     def _print_version(self):
         """Print version information."""
         from audio_analyzer import __version__
