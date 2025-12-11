@@ -12,7 +12,8 @@ setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/qaaph-zyld/track_reverse_engineering",
-    packages=find_packages(),
+    packages=["wav_reverse_engineer"] + [p for p in find_packages() if p != "wav_reverse_engineer"],
+    package_dir={"wav_reverse_engineer": "."},
     package_data={
         'audio_analyzer': ['*.py'],
     },

@@ -117,6 +117,8 @@ class AudioAnalyzerCLI:
                               help='Disable visualization generation')
         yt_parser.add_argument('--export-json', action='store_true',
                               help='Export analysis results as JSON')
+        yt_parser.add_argument('--summary', action='store_true',
+                              help='Print a human-readable summary of the analysis')
         yt_parser.add_argument('--effects', action='store_true',
                               help='Run advanced effects analysis')
         yt_parser.add_argument('--instruments', action='store_true',
@@ -134,6 +136,38 @@ class AudioAnalyzerCLI:
         yt_parser.add_argument('--pitch-backend', type=str, default='yin',
                               choices=['yin', 'torchcrepe'],
                               help='Pitch tracking backend (default: yin)')
+
+        # YouTube batch analyze command
+        yt_batch_parser = subparsers.add_parser('yt-batch', help='Batch analyze audio from multiple YouTube URLs')
+        yt_batch_parser.add_argument('url_file', type=str,
+                                     help='Text file with one YouTube URL per line (blank lines and # comments ignored)')
+        yt_batch_parser.add_argument('-o', '--output-root', type=str, default='yt_batch_output',
+                                     help='Root directory for per-video analysis results (default: ./yt_batch_output)')
+        yt_batch_parser.add_argument('--no-vis', action='store_true',
+                                     help='Disable visualization generation')
+        yt_batch_parser.add_argument('--export-json', action='store_true',
+                                     help='Export analysis results as JSON for each video')
+        yt_batch_parser.add_argument('--summary', action='store_true',
+                                     help='Print a human-readable summary for each video')
+        yt_batch_parser.add_argument('--effects', action='store_true',
+                                     help='Run advanced effects analysis')
+        yt_batch_parser.add_argument('--instruments', action='store_true',
+                                     help='Run instrument recognition')
+        yt_batch_parser.add_argument('--separate', type=str, default='none',
+                                     choices=['none', 'hpss', 'spleeter2', 'spleeter4', 'spleeter5', 'demucs'],
+                                     help='Perform source separation method')
+        yt_batch_parser.add_argument('--export-stems', action='store_true',
+                                     help='Export separated stems as audio files')
+        yt_batch_parser.add_argument('--keep-audio', action='store_true',
+                                     help='Keep downloaded audio files after analysis')
+        yt_batch_parser.add_argument('--chord-backend', type=str, default='simple',
+                                     choices=['simple', 'chordino'],
+                                     help='Chord detection backend (default: simple)')
+        yt_batch_parser.add_argument('--pitch-backend', type=str, default='yin',
+                                     choices=['yin', 'torchcrepe'],
+                                     help='Pitch tracking backend (default: yin)')
+        yt_batch_parser.add_argument('--jobs', type=int, default=1,
+                                     help='Number of parallel workers (default: 1)')
         
         # Version command
         subparsers.add_parser('version', help='Show version information')
@@ -207,6 +241,22 @@ class AudioAnalyzerCLI:
                 keep_audio=args.keep_audio,
                 chord_backend=args.chord_backend,
                 pitch_backend=args.pitch_backend
+            )
+        elif args.command == 'yt-batch':
+            return self.batch_youtube(
+                url_file=args.url_file,
+                output_root=args.output_root,
+                generate_visualizations=not args.no_vis,
+                export_json=args.export_json,
+                print_summary=args.summary,
+                effects=args.effects,
+                instruments=args.instruments,
+                separate=args.separate,
+                export_stem_files=args.export_stems,
+                keep_audio=args.keep_audio,
+                chord_backend=args.chord_backend,
+                pitch_backend=args.pitch_backend,
+                jobs=args.jobs,
             )
         elif args.command == 'version':
             self._print_version()
@@ -562,6 +612,87 @@ class AudioAnalyzerCLI:
         except Exception as e:
             print(f"\nError during batch processing: {str(e)}", file=sys.stderr)
             return 1
+
+    def batch_youtube(self,
+                      url_file: str,
+                      output_root: str = 'yt_batch_output',
+                      generate_visualizations: bool = False,
+                      export_json: bool = True,
+                      print_summary: bool = False,
+                      effects: bool = False,
+                      instruments: bool = False,
+                      separate: str = 'none',
+                      export_stem_files: bool = False,
+                      keep_audio: bool = False,
+                      chord_backend: str = 'simple',
+                      pitch_backend: str = 'yin',
+                      jobs: int = 1) -> int:
+        """Batch analyze multiple YouTube URLs from a text file.
+
+        Each non-empty, non-comment line in the file is treated as a URL.
+        Results for each video are written into a separate subdirectory
+        under ``output_root``.
+        """
+        try:
+            if not os.path.isfile(url_file):
+                print(f"Error: URL list file not found: {url_file}", file=sys.stderr)
+                return 1
+
+            with open(url_file, 'r', encoding='utf-8') as f:
+                raw_lines = f.readlines()
+            urls = [ln.strip() for ln in raw_lines if ln.strip() and not ln.lstrip().startswith('#')]
+
+            if not urls:
+                print(f"No URLs found in {url_file}")
+                return 0
+
+            ensure_dir(output_root)
+            total = len(urls)
+            print(f"Found {total} YouTube URLs to process.")
+
+            results: Dict[str, str] = {}
+
+            def _process_one(index: int, url: str) -> None:
+                label = f"video_{index + 1:03d}"
+                video_output_dir = os.path.join(output_root, label)
+                ensure_dir(video_output_dir)
+                print(f"\n[{index + 1}/{total}] {url}")
+                ret = self.analyze_youtube(
+                    url,
+                    output_dir=video_output_dir,
+                    generate_visualizations=generate_visualizations,
+                    export_json=export_json,
+                    print_summary=print_summary,
+                    effects=effects,
+                    instruments=instruments,
+                    separate=separate,
+                    export_stem_files=export_stem_files,
+                    keep_audio=keep_audio,
+                    chord_backend=chord_backend,
+                    pitch_backend=pitch_backend,
+                )
+                results[url] = 'Success' if ret == 0 else 'Failed'
+
+            if jobs <= 1:
+                for idx, url in enumerate(urls):
+                    _process_one(idx, url)
+            else:
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                with ThreadPoolExecutor(max_workers=max(1, jobs)) as ex:
+                    futures = {ex.submit(_process_one, idx, url): url for idx, url in enumerate(urls)}
+                    for fut in as_completed(futures):
+                        fut.result()
+
+            print("\nYouTube batch processing complete!")
+            print("\nSummary:")
+            for url, status in results.items():
+                print(f"  {url}: {status}")
+
+            return 0
+
+        except Exception as e:
+            print(f"\nError during YouTube batch processing: {e}", file=sys.stderr)
+            return 1
     
     def analyze_youtube(self,
                         url: str,
@@ -644,6 +775,7 @@ class AudioAnalyzerCLI:
         try:
             duration = features.get('duration') or features.get('duration_seconds')
             tempo = features.get('tempo')
+            key_display = features.get('key_display')
             key = features.get('key')
             mode = features.get('mode')
             rms = features.get('rms_energy')
@@ -654,7 +786,9 @@ class AudioAnalyzerCLI:
                 print(f"  Duration: {duration:.2f} s")
             if tempo is not None:
                 print(f"  Tempo: {tempo:.1f} BPM")
-            if key is not None:
+            if key_display:
+                print(f"  Key: {key_display}")
+            elif key is not None:
                 if mode:
                     print(f"  Key: {key} {mode}")
                 else:
@@ -664,10 +798,88 @@ class AudioAnalyzerCLI:
             if peak is not None:
                 print(f"  Peak amplitude: {peak:.4f}")
 
-            # Chord progression summary
+            sample_rate = features.get('sample_rate')
+            spectral_centroid = features.get('spectral_centroid')
+            harmonic_ratio = features.get('harmonic_ratio')
+            beat_count = features.get('beat_count')
+            beats_per_second = features.get('beats_per_second')
+            onset_strength = features.get('onset_strength')
+
+            character_lines = []
+            if spectral_centroid is not None and sample_rate:
+                try:
+                    nyquist = float(sample_rate) / 2.0 if sample_rate else 1.0
+                    rel = float(spectral_centroid) / max(nyquist, 1.0)
+                    if rel < 0.25:
+                        tone = 'dark / mellow'
+                    elif rel < 0.5:
+                        tone = 'warm'
+                    elif rel < 0.75:
+                        tone = 'bright'
+                    else:
+                        tone = 'very bright'
+                    character_lines.append(f"overall tone: {tone}")
+                except Exception:
+                    pass
+
+            if harmonic_ratio is not None:
+                try:
+                    hr = float(harmonic_ratio)
+                    if hr < 0.3:
+                        desc = 'mostly percussive texture'
+                    elif hr < 0.6:
+                        desc = 'mixed harmonic/percussive texture'
+                    else:
+                        desc = 'strongly harmonic/tonal texture'
+                    character_lines.append(desc)
+                except Exception:
+                    pass
+
+            if duration and beat_count is not None:
+                try:
+                    density = float(beat_count) / max(float(duration), 1e-6)
+                    if density < 0.5:
+                        groove = 'sparse / relaxed rhythm'
+                    elif density < 1.5:
+                        groove = 'moderate groove'
+                    else:
+                        groove = 'dense / driving rhythm'
+                    character_lines.append(groove)
+                except Exception:
+                    pass
+            elif beats_per_second is not None:
+                try:
+                    bps = float(beats_per_second)
+                    if bps < 0.5:
+                        groove = 'sparse / relaxed rhythm'
+                    elif bps < 1.5:
+                        groove = 'moderate groove'
+                    else:
+                        groove = 'dense / driving rhythm'
+                    character_lines.append(groove)
+                except Exception:
+                    pass
+
+            if onset_strength is not None:
+                try:
+                    os_val = float(onset_strength)
+                    if os_val < 0.1:
+                        dyn = 'very soft/transient-light'
+                    elif os_val < 0.3:
+                        dyn = 'moderately punchy'
+                    else:
+                        dyn = 'highly percussive/punchy'
+                    character_lines.append(dyn)
+                except Exception:
+                    pass
+
+            if character_lines:
+                print("\nCharacter:")
+                for line in character_lines:
+                    print(f"  {line}")
+
             progression = features.get('chord_progression')
             if progression:
-                # progression might be a list or formatted string
                 if isinstance(progression, list):
                     preview = progression[:8]
                     prog_str = ' - '.join(str(p) for p in preview)
@@ -676,11 +888,9 @@ class AudioAnalyzerCLI:
                 print("\nHarmony:")
                 print(f"  Chord progression (preview): {prog_str}")
 
-            # Instruments
             instruments = features.get('instruments')
             if instruments:
                 if isinstance(instruments, dict):
-                    # assume {instrument: score}
                     top = sorted(instruments.items(), key=lambda kv: kv[1], reverse=True)[:5]
                     inst_str = ', '.join(f"{k} ({v:.2f})" for k, v in top)
                 elif isinstance(instruments, list):
